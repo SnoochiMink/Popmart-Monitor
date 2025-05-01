@@ -16,14 +16,17 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# Initialize colorama for colored output
+# Initialize colorama for colored terminal output
 colorama.init()
 
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler("popmart_monitor.log"), logging.StreamHandler()]
+    handlers=[
+        logging.FileHandler("popmart_monitor.log"),
+        logging.StreamHandler()
+    ]
 )
 
 class PopmartMonitor:
@@ -31,8 +34,8 @@ class PopmartMonitor:
         self.base_url = "https://www.popmart.com"
         self.products_url = "https://www.popmart.com/us/collection/1"
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.7103.59 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
             "Referer": "https://www.popmart.com/",
             "Connection": "keep-alive"
@@ -45,20 +48,13 @@ class PopmartMonitor:
             self.driver = self.setup_selenium()
 
     def setup_selenium(self):
-        """Set up Selenium WebDriver with enhanced options to suppress WebGL and mimic a real browser."""
+        """Set up Selenium WebDriver with increased timeout."""
         try:
             options = Options()
             options.add_argument("--headless")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")  # More aggressive than --disable-webgl
-            options.add_argument("--disable-webgl")  # Still include for good measure
-            options.add_argument("--disable-accelerated-2d-canvas")
-            options.add_argument("--disable-accelerated-video-decode")
-            options.add_argument("window-size=1920,1080")
-            options.add_argument(f"user-agent={self.headers['User-Agent']}")
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            options.add_argument("--disable-blink-features=AutomationControlled")
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=options)
             driver.set_page_load_timeout(300)  # 5 minutes
@@ -98,15 +94,16 @@ class PopmartMonitor:
                     try:
                         logging.info("Waiting for terms and conditions popup...")
                         accept_button = WebDriverWait(self.driver, 60).until(
-                            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'ACCEPT') or contains(text(), 'Accept')]"))
+                            EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), 'ACCEPT') or contains(text(), 'Accept')]"))
                         )
+                        logging.info("Found accept button")
                         accept_button.click()
                         logging.info("Clicked accept button")
-                        time.sleep(2)
+                        time.sleep(2)  # Wait for page to update after clicking
                     except Exception as e:
                         logging.info(f"No terms popup found or failed to click: {e}")
 
-                    # Wait longer for product items to load
+                    # Wait for product items to load
                     logging.info("Waiting for product items to load...")
                     WebDriverWait(self.driver, 120).until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, "div.index_productItem__Z0Lxa, div[class*='productItem']"))
@@ -142,7 +139,7 @@ class PopmartMonitor:
     def get_product_pages(self):
         """Retrieve product info from the collections page."""
         product_list = []
-        soup = self.fetch_website(self.products_url, use_selenium=self.use_selenium)
+        soup = self.fetch_website(self.products_url, use_selenium=self.use_selenium, retries=3, delay=5)
         if not soup:
             logging.warning("No soup object returned for product pages")
             with open("debug_collection.html", "w", encoding="utf-8") as f:
@@ -189,7 +186,7 @@ class PopmartMonitor:
     def check_product_stock(self, product_info):
         """Check product details and stock status on the product page."""
         product_url = product_info["url"]
-        soup = self.fetch_website(product_url, use_selenium=False)
+        soup = self.fetch_website(product_url, use_selenium=False, retries=3, delay=5)
         if not soup:
             logging.warning(f"No soup object for {product_url}")
             return None
@@ -278,10 +275,11 @@ class PopmartMonitor:
             self.all_products.append(updated_product_info)
             product_id = updated_product_info["url"]
 
-            if product_id not in self.known_products and updated_product_info["is_new"]:
-                logging.info(f"New 'NEW' product found: {updated_product_info['title']}")
-                new_products.append(updated_product_info)
-                self.display_new_product_alert(updated_product_info)
+            if product_id not in self.known_products:
+                if updated_product_info["is_new"]:
+                    logging.info(f"New 'NEW' product found: {updated_product_info['title']}")
+                    new_products.append(updated_product_info)
+                    self.display_new_product_alert(updated_product_info)
 
             if product_id in self.known_products:
                 was_out_of_stock = not self.known_products[product_id]["in_stock"]
