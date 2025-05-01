@@ -51,7 +51,7 @@ class PopmartMonitor:
             options = Options()
             options.add_argument("--headless")
             options.add_argument(f"user-agent={self.headers['User-Agent']}")
-            service = Service()  # Assumes chromedriver is in PATH
+            service = Service()
             driver = webdriver.Chrome(service=service, options=options)
             logging.info("Selenium WebDriver initialized")
             return driver
@@ -102,8 +102,8 @@ class PopmartMonitor:
             return None
 
     def get_product_pages(self):
-        """Retrieve all product page links from the collections page."""
-        product_links = []
+        """Retrieve product info from the collections page."""
+        product_list = []
         soup = self.fetch_website(self.products_url, use_selenium=self.use_selenium)
         if not soup:
             logging.warning("No soup object returned for product pages")
@@ -111,7 +111,6 @@ class PopmartMonitor:
                 f.write("No content fetched")
             return []
 
-        # Updated selectors based on HTML structure
         product_items = soup.select("div.index_productItem__Z0Lxa, div[class*='productItem']")
         logging.info(f"Found {len(product_items)} product items")
 
@@ -121,47 +120,54 @@ class PopmartMonitor:
                 f.write(str(soup.prettify()))
 
         for item in product_items:
+            # Extract product link
             link_element = item.select_one("a[href*='/product/']")
-            if link_element and "href" in link_element.attrs:
-                href = link_element["href"]
-                full_url = href if href.startswith("http") else self.base_url + href
-                if full_url not in product_links:
-                    product_links.append(full_url)
+            if not link_element or "href" not in link_element.attrs:
+                continue
+            href = link_element["href"]
+            full_url = href if href.startswith("http") else self.base_url + href
 
-        logging.info(f"Collected {len(product_links)} unique product links")
-        return product_links
+            # Extract title
+            title_elem = item.select_one("h2.index_itemUsTitle__70Lxa")
+            title = title_elem.text.strip() if title_elem else "Unknown Product"
 
-    def check_product_stock(self, product_url):
-        """Check product details and stock status."""
+            # Extract price
+            price_elem = item.select_one("div.index_itemPrice__AQQmy")
+            price = price_elem.text.strip() if price_elem else "Unknown Price"
+
+            # Check if product is labeled "NEW"
+            is_new = bool(item.select_one("span.ant-tag.index_tagType__EQIMP[style*='rgb(255, 179, 0)']"))
+
+            # Check if product is "OUT OF STOCK"
+            is_out_of_stock = bool(item.select_one("span.ant-tag.index_tagType__EQIMP[style*='rgb(153, 153, 153)']"))
+
+            product_info = {
+                "url": full_url,
+                "title": title,
+                "price": price,
+                "is_new": is_new,
+                "is_out_of_stock": is_out_of_stock,
+                "in_stock": not is_out_of_stock  # Initial stock status from collection page
+            }
+            product_list.append(product_info)
+
+        logging.info(f"Collected {len(product_list)} products")
+        return product_list
+
+    def check_product_stock(self, product_info):
+        """Check product details and stock status on the product page."""
+        product_url = product_info["url"]
         soup = self.fetch_website(product_url)
         if not soup:
             logging.warning(f"No soup object for {product_url}")
             return None
 
         try:
-            # Extract product title
-            product_title_elem = (
-                soup.select_one("h2.index_itemUsTitle__7oLxa") or
-                soup.select_one("h2[class*='itemUsTitle']") or
-                soup.select_one(".product-title h1") or
-                soup.select_one(".product-info h1") or
-                soup.select_one(".product-name") or
-                soup.select_one("h1.title")
-            )
-            if not product_title_elem:
-                logging.warning(f"No title element found for {product_url}")
-            product_title = product_title_elem.text.strip() if product_title_elem else "Unknown Product"
+            # Use title and price from collection page, but verify stock status
+            title = product_info["title"]
+            price = product_info["price"]
 
-            # Extract price
-            price_elem = (
-                soup.select_one(".product-price .price") or
-                soup.select_one(".price") or
-                soup.select_one(".product-info .money") or
-                soup.select_one(".money")
-            )
-            price = price_elem.text.strip() if price_elem else "Unknown Price"
-
-            # Check stock status
+            # Check for "Add to Bag" button to confirm stock status
             add_to_bag = (
                 soup.select_one(".add-to-bag") or
                 soup.select_one(".add-to-cart") or
@@ -179,13 +185,24 @@ class PopmartMonitor:
 
             return {
                 "url": product_url,
-                "title": product_title,
+                "title": title,
                 "price": price,
+                "is_new": product_info["is_new"],
                 "in_stock": in_stock
             }
         except Exception as e:
             logging.error(f"Error processing product {product_url}: {e}")
             return None
+
+    def display_new_product_alert(self, product):
+        """Display an alert for a new product labeled 'NEW'."""
+        print("\n" + "=" * 60)
+        print(f"{Fore.GREEN}🌟 NEW PRODUCT ALERT! 🌟{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Product:{Style.RESET_ALL} {product['title']}")
+        print(f"{Fore.YELLOW}Price:{Style.RESET_ALL} {product['price']}")
+        print(f"{Fore.YELLOW}URL:{Style.RESET_ALL} {product['url']}")
+        print(f"{Fore.YELLOW}Time:{Style.RESET_ALL} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("=" * 60 + "\n")
 
     def display_restock_alert(self, product):
         """Display a restock alert."""
@@ -198,14 +215,15 @@ class PopmartMonitor:
         print("=" * 60 + "\n")
 
     def display_random_pick(self):
-        """Display a random product pick."""
-        if not self.all_products:
-            print(f"{Fore.MAGENTA}No products available for random pick.{Style.RESET_ALL}")
+        """Display a random 'NEW' product pick."""
+        new_products = [p for p in self.all_products if p.get("is_new", False)]
+        if not new_products:
+            print(f"{Fore.MAGENTA}No new products available for random pick.{Style.RESET_ALL}")
             return
 
-        random_product = random.choice(self.all_products)
+        random_product = random.choice(new_products)
         print("\n" + "-" * 60)
-        print(f"{Fore.MAGENTA}✨ RANDOM PICK OF THE CYCLE ✨{Style.RESET_ALL}")
+        print(f"{Fore.MAGENTA}✨ RANDOM NEW PRODUCT PICK ✨{Style.RESET_ALL}")
         print(f"{Fore.CYAN}Product: {random_product['title']}{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}Price:{Style.RESET_ALL} {random_product['price']}")
         print(f"{Fore.YELLOW}URL:{Style.RESET_ALL} {random_product['url']}")
@@ -214,42 +232,51 @@ class PopmartMonitor:
 
     def run(self):
         """Run the main monitoring loop."""
-        print(f"{Fore.CYAN}Checking Popmart for restocks...{Style.RESET_ALL}")
-        logging.info("Starting restock check")
+        print(f"{Fore.CYAN}Checking Popmart for restocks and new products...{Style.RESET_ALL}")
+        logging.info("Starting restock and new product check")
 
-        product_links = self.get_product_pages()
+        product_list = self.get_product_pages()
         restocked_products = []
+        new_products = []
         self.all_products = []
 
-        for link in product_links:
-            product_info = self.check_product_stock(link)
-            if not product_info:
+        for product_info in product_list:
+            # Check stock status on the product page
+            updated_product_info = self.check_product_stock(product_info)
+            if not updated_product_info:
                 continue
 
-            self.all_products.append(product_info)
-            product_id = product_info["url"]
+            self.all_products.append(updated_product_info)
+            product_id = updated_product_info["url"]
 
+            # Check if this is a new product (not previously seen)
+            if product_id not in self.known_products:
+                if updated_product_info["is_new"]:
+                    logging.info(f"New 'NEW' product found: {updated_product_info['title']}")
+                    new_products.append(updated_product_info)
+                    self.display_new_product_alert(updated_product_info)
+
+            # Check for restock (previously out of stock, now in stock)
             if product_id in self.known_products:
-                if not self.known_products[product_id]["in_stock"] and product_info["in_stock"]:
-                    logging.info(f"Restock detected: {product_info['title']}")
-                    restocked_products.append(product_info)
-                    self.display_restock_alert(product_info)
-            else:
-                if product_info["in_stock"]:
-                    logging.info(f"New product in stock: {product_info['title']}")
-                    restocked_products.append(product_info)
-                    self.display_restock_alert(product_info)
+                was_out_of_stock = not self.known_products[product_id]["in_stock"]
+                is_now_in_stock = updated_product_info["in_stock"]
+                if was_out_of_stock and is_now_in_stock:
+                    logging.info(f"Product restocked: {updated_product_info['title']}")
+                    restocked_products.append(updated_product_info)
+                    self.display_restock_alert(updated_product_info)
 
+            # Update known products
             self.known_products[product_id] = {
-                "title": product_info["title"],
-                "in_stock": product_info["in_stock"],
+                "title": updated_product_info["title"],
+                "in_stock": updated_product_info["in_stock"],
+                "is_new": updated_product_info["is_new"],
                 "last_checked": datetime.now().isoformat()
             }
             time.sleep(1)
 
         self.save_known_products()
-        print(f"{Fore.CYAN}Check complete. Found {len(restocked_products)} restocked/new products.{Style.RESET_ALL}")
-        logging.info(f"Check complete. Found {len(restocked_products)} restocked/new products.")
+        print(f"{Fore.CYAN}Check complete. Found {len(new_products)} new 'NEW' products and {len(restocked_products)} restocked products.{Style.RESET_ALL}")
+        logging.info(f"Check complete. Found {len(new_products)} new 'NEW' products and {len(restocked_products)} restocked products.")
         return restocked_products
 
     def wait_with_random_picks(self, total_wait_minutes=10, random_pick_minutes=3):
@@ -279,7 +306,7 @@ class PopmartMonitor:
 if __name__ == "__main__":
     monitor = PopmartMonitor(use_selenium=True)
     try:
-        print(f"{Fore.CYAN}Popmart Restock Monitor Started{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}Popmart Restock and New Product Monitor Started{Style.RESET_ALL}")
         print(f"{Fore.CYAN}Press Ctrl+C to exit{Style.RESET_ALL}")
 
         monitor.run()
