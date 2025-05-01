@@ -8,6 +8,12 @@ import random
 from datetime import datetime
 import colorama
 from colorama import Fore, Style
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # Initialize colorama for colored terminal output
 colorama.init()
@@ -23,16 +29,36 @@ logging.basicConfig(
 )
 
 class PopmartMonitor:
-    def __init__(self):
+    def __init__(self, use_selenium=False):
         self.base_url = "https://www.popmart.com"
         self.products_url = "https://www.popmart.com/us/collection/1"
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5"
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Referer": "https://www.popmart.com/",
+            "Connection": "keep-alive"
         }
+        self.use_selenium = use_selenium
         self.known_products = self.load_known_products()
-        self.all_products = []  # Store all products for random picks
+        self.all_products = []
+        if self.use_selenium:
+            self.driver = self.setup_selenium()
+
+    def setup_selenium(self):
+        """Set up Selenium WebDriver."""
+        try:
+            options = Options()
+            options.add_argument("--headless")
+            options.add_argument(f"user-agent={self.headers['User-Agent']}")
+            service = Service()  # Assumes chromedriver is in PATH
+            driver = webdriver.Chrome(service=service, options=options)
+            logging.info("Selenium WebDriver initialized")
+            return driver
+        except Exception as e:
+            logging.error(f"Failed to initialize Selenium: {e}")
+            self.use_selenium = False
+            return None
 
     def load_known_products(self):
         """Load previously seen products from a JSON file."""
@@ -53,11 +79,23 @@ class PopmartMonitor:
         except Exception as e:
             logging.error(f"Failed to save known products: {e}")
 
-    def fetch_website(self, url):
-        """Fetch and parse a webpage using BeautifulSoup."""
+    def fetch_website(self, url, use_selenium=False):
+        """Fetch and parse a webpage."""
+        if use_selenium and self.use_selenium and self.driver:
+            try:
+                self.driver.get(url)
+                WebDriverWait(self.driver, 10).until(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.index_productItem__Z0Lxa"))
+                )
+                html = self.driver.page_source
+                return BeautifulSoup(html, "html.parser")
+            except Exception as e:
+                logging.error(f"Selenium failed for {url}: {e}")
+                return None
         try:
             response = requests.get(url, headers=self.headers, timeout=10)
             response.raise_for_status()
+            logging.info(f"Fetched {url} - Status: {response.status_code}")
             return BeautifulSoup(response.content, "html.parser")
         except requests.RequestException as e:
             logging.error(f"Failed to fetch {url}: {e}")
@@ -66,21 +104,31 @@ class PopmartMonitor:
     def get_product_pages(self):
         """Retrieve all product page links from the collections page."""
         product_links = []
-        soup = self.fetch_website(self.products_url)
+        soup = self.fetch_website(self.products_url, use_selenium=self.use_selenium)
         if not soup:
-            logging.warning("No soup object returned for product pages.")
+            logging.warning("No soup object returned for product pages")
+            with open("debug_collection.html", "w", encoding="utf-8") as f:
+                f.write("No content fetched")
             return []
 
-        # Try multiple selectors for product cards
-        product_items = soup.select(".product-card, .product-item, .collection-item, .index_item")
+        # Updated selectors based on HTML structure
+        product_items = soup.select("div.index_productItem__Z0Lxa, div[class*='productItem']")
+        logging.info(f"Found {len(product_items)} product items")
+
+        if not product_items:
+            logging.warning("No product items found. Saving HTML for debugging")
+            with open("debug_collection.html", "w", encoding="utf-8") as f:
+                f.write(str(soup.prettify()))
+
         for item in product_items:
-            link_element = item.select_one("a")
+            link_element = item.select_one("a[href*='/product/']")
             if link_element and "href" in link_element.attrs:
                 href = link_element["href"]
                 full_url = href if href.startswith("http") else self.base_url + href
-                product_links.append(full_url)
+                if full_url not in product_links:
+                    product_links.append(full_url)
 
-        logging.info(f"Found {len(product_links)} product links")
+        logging.info(f"Collected {len(product_links)} unique product links")
         return product_links
 
     def check_product_stock(self, product_url):
@@ -91,10 +139,10 @@ class PopmartMonitor:
             return None
 
         try:
-            # Extract product title with provided selector and fallbacks
+            # Extract product title
             product_title_elem = (
-                soup.select_one("h2.index_itemUsTitle__7oLxa") or  # Primary selector
-                soup.select_one("h2[class*='itemUsTitle']") or     # Partial match for CSS modules
+                soup.select_one("h2.index_itemUsTitle__7oLxa") or
+                soup.select_one("h2[class*='itemUsTitle']") or
                 soup.select_one(".product-title h1") or
                 soup.select_one(".product-info h1") or
                 soup.select_one(".product-name") or
@@ -104,7 +152,7 @@ class PopmartMonitor:
                 logging.warning(f"No title element found for {product_url}")
             product_title = product_title_elem.text.strip() if product_title_elem else "Unknown Product"
 
-            # Extract price with multiple selectors
+            # Extract price
             price_elem = (
                 soup.select_one(".product-price .price") or
                 soup.select_one(".price") or
@@ -140,7 +188,7 @@ class PopmartMonitor:
             return None
 
     def display_restock_alert(self, product):
-        """Display a restock alert in the terminal."""
+        """Display a restock alert."""
         print("\n" + "=" * 60)
         print(f"{Fore.GREEN}🚨 RESTOCK ALERT! 🚨{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}Product:{Style.RESET_ALL} {product['title']}")
@@ -181,7 +229,6 @@ class PopmartMonitor:
             self.all_products.append(product_info)
             product_id = product_info["url"]
 
-            # Check for new or restocked products
             if product_id in self.known_products:
                 if not self.known_products[product_id]["in_stock"] and product_info["in_stock"]:
                     logging.info(f"Restock detected: {product_info['title']}")
@@ -193,13 +240,12 @@ class PopmartMonitor:
                     restocked_products.append(product_info)
                     self.display_restock_alert(product_info)
 
-            # Update known products
             self.known_products[product_id] = {
                 "title": product_info["title"],
                 "in_stock": product_info["in_stock"],
                 "last_checked": datetime.now().isoformat()
             }
-            time.sleep(1)  # Avoid overwhelming the server
+            time.sleep(1)
 
         self.save_known_products()
         print(f"{Fore.CYAN}Check complete. Found {len(restocked_products)} restocked/new products.{Style.RESET_ALL}")
@@ -224,13 +270,19 @@ class PopmartMonitor:
 
         print("\n")
 
+    def __del__(self):
+        """Clean up Selenium driver."""
+        if hasattr(self, 'driver') and self.driver:
+            self.driver.quit()
+            logging.info("Selenium WebDriver closed")
+
 if __name__ == "__main__":
-    monitor = PopmartMonitor()
+    monitor = PopmartMonitor(use_selenium=True)
     try:
         print(f"{Fore.CYAN}Popmart Restock Monitor Started{Style.RESET_ALL}")
         print(f"{Fore.CYAN}Press Ctrl+C to exit{Style.RESET_ALL}")
 
-        monitor.run()  # Initial run
+        monitor.run()
         while True:
             print(f"\n{Fore.CYAN}Waiting 10 minutes before next check...{Style.RESET_ALL}")
             monitor.wait_with_random_picks(total_wait_minutes=10, random_pick_minutes=3)
