@@ -51,13 +51,13 @@ class PopmartMonitor:
         """Set up Selenium WebDriver with increased timeout."""
         try:
             options = Options()
-            options.add_argument("--headless")
+            options.add_argument("--headless")  # Run in headless mode
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=options)
-            driver.set_page_load_timeout(300)  # 5 minutes
+            driver.set_page_load_timeout(300)  # 5-minute timeout
             logging.info("Selenium WebDriver initialized")
             return driver
         except Exception as e:
@@ -85,7 +85,7 @@ class PopmartMonitor:
             logging.error(f"Failed to save known products: {e}")
 
     def fetch_website(self, url, use_selenium=False, retries=3, delay=5):
-        """Fetch and parse a webpage with retries and enhanced diagnostics."""
+        """Fetch and parse a webpage with popup handling, retries, and diagnostics."""
         for attempt in range(retries):
             if use_selenium and self.use_selenium and self.driver:
                 try:
@@ -99,14 +99,14 @@ class PopmartMonitor:
                         logging.info("Found accept button")
                         accept_button.click()
                         logging.info("Clicked accept button")
-                        time.sleep(2)  # Wait for page to update after clicking
+                        time.sleep(2)  # Brief pause to allow page to update
                     except Exception as e:
                         logging.info(f"No terms popup found or failed to click: {e}")
 
                     # Wait for product items to load
                     logging.info("Waiting for product items to load...")
                     WebDriverWait(self.driver, 120).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.index_productItem__Z0Lxa, div[class*='productItem']"))
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.index_productItemContainer_ZB9n0, div[class*='productItem']"))
                     )
                     html = self.driver.page_source
                     logging.info(f"Fetched {url} using Selenium")
@@ -139,14 +139,14 @@ class PopmartMonitor:
     def get_product_pages(self):
         """Retrieve product info from the collections page."""
         product_list = []
-        soup = self.fetch_website(self.products_url, use_selenium=self.use_selenium, retries=3, delay=5)
+        soup = self.fetch_website(self.products_url, use_selenium=self.use_selenium)
         if not soup:
             logging.warning("No soup object returned for product pages")
             with open("debug_collection.html", "w", encoding="utf-8") as f:
                 f.write("No content fetched")
             return []
 
-        product_items = soup.select("div.index_productItem__Z0Lxa, div[class*='productItem']")
+        product_items = soup.select("div.index_productItemContainer_ZB9n0, div[class*='productItem']")
         logging.info(f"Found {len(product_items)} product items")
 
         if not product_items:
@@ -186,7 +186,7 @@ class PopmartMonitor:
     def check_product_stock(self, product_info):
         """Check product details and stock status on the product page."""
         product_url = product_info["url"]
-        soup = self.fetch_website(product_url, use_selenium=False, retries=3, delay=5)
+        soup = self.fetch_website(product_url, use_selenium=False)
         if not soup:
             logging.warning(f"No soup object for {product_url}")
             return None
