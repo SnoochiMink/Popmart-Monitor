@@ -8,12 +8,10 @@ import random
 from datetime import datetime
 import colorama
 from colorama import Fore, Style
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+import undetected_chromedriver as uc
 
 # Initialize colorama for colored terminal output
 colorama.init()
@@ -29,11 +27,11 @@ logging.basicConfig(
 )
 
 class PopmartMonitor:
-    def __init__(self, use_selenium=False):
+    def __init__(self, use_selenium=True):
         self.base_url = "https://www.popmart.com"
         self.products_url = "https://www.popmart.com/us/collection/1"
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.7103.59 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
             "Referer": "https://www.popmart.com/",
@@ -42,17 +40,20 @@ class PopmartMonitor:
         self.use_selenium = use_selenium
         self.known_products = self.load_known_products()
         self.all_products = []
+        self.driver = None
         if self.use_selenium:
             self.driver = self.setup_selenium()
 
     def setup_selenium(self):
-        """Set up Selenium WebDriver."""
+        """Set up Selenium WebDriver with improved options."""
         try:
             options = Options()
             options.add_argument("--headless")
             options.add_argument(f"user-agent={self.headers['User-Agent']}")
-            service = Service()
-            driver = webdriver.Chrome(service=service, options=options)
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            driver = uc.Chrome(options=options)
+            driver.set_page_load_timeout(120)
             logging.info("Selenium WebDriver initialized")
             return driver
         except Exception as e:
@@ -79,32 +80,54 @@ class PopmartMonitor:
         except Exception as e:
             logging.error(f"Failed to save known products: {e}")
 
-    def fetch_website(self, url, use_selenium=False):
-        """Fetch and parse a webpage."""
-        if use_selenium and self.use_selenium and self.driver:
-            try:
-                self.driver.get(url)
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "div.index_productItem__Z0Lxa"))
-                )
-                html = self.driver.page_source
-                return BeautifulSoup(html, "html.parser")
-            except Exception as e:
-                logging.error(f"Selenium failed for {url}: {e}")
-                return None
-        try:
-            response = requests.get(url, headers=self.headers, timeout=10)
-            response.raise_for_status()
-            logging.info(f"Fetched {url} - Status: {response.status_code}")
-            return BeautifulSoup(response.content, "html.parser")
-        except requests.RequestException as e:
-            logging.error(f"Failed to fetch {url}: {e}")
-            return None
+    def fetch_website(self, url, use_selenium=False, retries=3, delay=5):
+        """Fetch and parse a webpage with retries, handling terms popup."""
+        for attempt in range(retries):
+            if use_selenium and self.use_selenium and self.driver:
+                try:
+                    self.driver.get(url)
+                    # Wait for the terms and conditions popup and accept it
+                    try:
+                        accept_button = WebDriverWait(self.driver, 10).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "div.policy_acceptBtn__ZNUI7"))
+                        )
+                        accept_button.click()
+                        logging.info("Accepted terms and conditions popup")
+                    except Exception as e:
+                        logging.info(f"No terms popup found or failed to click: {e}")
+
+                    # Wait for product items to load
+                    WebDriverWait(self.driver, 30).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.index_productItem__Z0Lxa"))
+                    )
+                    html = self.driver.page_source
+                    logging.info(f"Fetched {url} using Selenium")
+                    return BeautifulSoup(html, "html.parser")
+                except Exception as e:
+                    logging.error(f"Selenium failed for {url} (attempt {attempt+1}/{retries}): {e}")
+                    if self.driver:
+                        with open("debug_selenium.html", "w", encoding="utf-8") as f:
+                            f.write(self.driver.page_source)
+                    if attempt == retries - 1:
+                        return None
+                    time.sleep(delay)
+            else:
+                try:
+                    response = requests.get(url, headers=self.headers, timeout=15)
+                    response.raise_for_status()
+                    logging.info(f"Fetched {url} - Status: {response.status_code}")
+                    return BeautifulSoup(response.content, "html.parser")
+                except requests.RequestException as e:
+                    logging.error(f"Failed to fetch {url} (attempt {attempt+1}/{retries}): {e}")
+                    if attempt == retries - 1:
+                        return None
+                    time.sleep(delay)
+        return None
 
     def get_product_pages(self):
         """Retrieve product info from the collections page."""
         product_list = []
-        soup = self.fetch_website(self.products_url, use_selenium=self.use_selenium)
+        soup = self.fetch_website(self.products_url, use_selenium=self.use_selenium, retries=3, delay=5)
         if not soup:
             logging.warning("No soup object returned for product pages")
             with open("debug_collection.html", "w", encoding="utf-8") as f:
@@ -120,25 +143,19 @@ class PopmartMonitor:
                 f.write(str(soup.prettify()))
 
         for item in product_items:
-            # Extract product link
             link_element = item.select_one("a[href*='/product/']")
             if not link_element or "href" not in link_element.attrs:
                 continue
             href = link_element["href"]
             full_url = href if href.startswith("http") else self.base_url + href
 
-            # Extract title
             title_elem = item.select_one("h2.index_itemUsTitle__70Lxa")
             title = title_elem.text.strip() if title_elem else "Unknown Product"
 
-            # Extract price
             price_elem = item.select_one("div.index_itemPrice__AQQmy")
             price = price_elem.text.strip() if price_elem else "Unknown Price"
 
-            # Check if product is labeled "NEW"
             is_new = bool(item.select_one("span.ant-tag.index_tagType__EQIMP[style*='rgb(255, 179, 0)']"))
-
-            # Check if product is "OUT OF STOCK"
             is_out_of_stock = bool(item.select_one("span.ant-tag.index_tagType__EQIMP[style*='rgb(153, 153, 153)']"))
 
             product_info = {
@@ -147,7 +164,7 @@ class PopmartMonitor:
                 "price": price,
                 "is_new": is_new,
                 "is_out_of_stock": is_out_of_stock,
-                "in_stock": not is_out_of_stock  # Initial stock status from collection page
+                "in_stock": not is_out_of_stock
             }
             product_list.append(product_info)
 
@@ -157,17 +174,15 @@ class PopmartMonitor:
     def check_product_stock(self, product_info):
         """Check product details and stock status on the product page."""
         product_url = product_info["url"]
-        soup = self.fetch_website(product_url)
+        soup = self.fetch_website(product_url, use_selenium=False, retries=3, delay=5)
         if not soup:
             logging.warning(f"No soup object for {product_url}")
             return None
 
         try:
-            # Use title and price from collection page, but verify stock status
             title = product_info["title"]
             price = product_info["price"]
 
-            # Check for "Add to Bag" button to confirm stock status
             add_to_bag = (
                 soup.select_one(".add-to-bag") or
                 soup.select_one(".add-to-cart") or
@@ -241,7 +256,6 @@ class PopmartMonitor:
         self.all_products = []
 
         for product_info in product_list:
-            # Check stock status on the product page
             updated_product_info = self.check_product_stock(product_info)
             if not updated_product_info:
                 continue
@@ -249,14 +263,12 @@ class PopmartMonitor:
             self.all_products.append(updated_product_info)
             product_id = updated_product_info["url"]
 
-            # Check if this is a new product (not previously seen)
             if product_id not in self.known_products:
                 if updated_product_info["is_new"]:
                     logging.info(f"New 'NEW' product found: {updated_product_info['title']}")
                     new_products.append(updated_product_info)
                     self.display_new_product_alert(updated_product_info)
 
-            # Check for restock (previously out of stock, now in stock)
             if product_id in self.known_products:
                 was_out_of_stock = not self.known_products[product_id]["in_stock"]
                 is_now_in_stock = updated_product_info["in_stock"]
@@ -265,7 +277,6 @@ class PopmartMonitor:
                     restocked_products.append(updated_product_info)
                     self.display_restock_alert(updated_product_info)
 
-            # Update known products
             self.known_products[product_id] = {
                 "title": updated_product_info["title"],
                 "in_stock": updated_product_info["in_stock"],
