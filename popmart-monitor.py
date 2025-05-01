@@ -8,10 +8,13 @@ import random
 from datetime import datetime
 import colorama
 from colorama import Fore, Style
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import undetected_chromedriver as uc
+from webdriver_manager.chrome import ChromeDriverManager
 
 # Initialize colorama for colored terminal output
 colorama.init()
@@ -45,14 +48,15 @@ class PopmartMonitor:
             self.driver = self.setup_selenium()
 
     def setup_selenium(self):
-        """Set up Selenium WebDriver with improved options."""
+        """Set up Selenium WebDriver using webdriver-manager."""
         try:
             options = Options()
-            options.add_argument("--headless")
-            options.add_argument(f"user-agent={self.headers['User-Agent']}")
+            options.add_argument("--headless")  # Run in headless mode (no browser UI)
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
-            driver = uc.Chrome(options=options)
+            options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            service = Service(ChromeDriverManager().install())  # Automatically manage ChromeDriver
+            driver = webdriver.Chrome(service=service, options=options)
             driver.set_page_load_timeout(120)
             logging.info("Selenium WebDriver initialized")
             return driver
@@ -86,7 +90,7 @@ class PopmartMonitor:
             if use_selenium and self.use_selenium and self.driver:
                 try:
                     self.driver.get(url)
-                    # Wait for the terms and conditions popup and accept it
+                    # Handle terms and conditions popup
                     try:
                         accept_button = WebDriverWait(self.driver, 10).until(
                             EC.element_to_be_clickable((By.CSS_SELECTOR, "div.policy_acceptBtn__ZNUI7"))
