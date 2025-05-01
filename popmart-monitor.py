@@ -16,17 +16,14 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 
-# Initialize colorama for colored terminal output
+# Initialize colorama for colored output
 colorama.init()
 
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("popmart_monitor.log"),
-        logging.StreamHandler()
-    ]
+    handlers=[logging.FileHandler("popmart_monitor.log"), logging.StreamHandler()]
 )
 
 class PopmartMonitor:
@@ -34,8 +31,8 @@ class PopmartMonitor:
         self.base_url = "https://www.popmart.com"
         self.products_url = "https://www.popmart.com/us/collection/1"
         self.headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.7103.59 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
             "Referer": "https://www.popmart.com/",
             "Connection": "keep-alive"
@@ -48,13 +45,20 @@ class PopmartMonitor:
             self.driver = self.setup_selenium()
 
     def setup_selenium(self):
-        """Set up Selenium WebDriver with increased timeout."""
+        """Set up Selenium WebDriver with enhanced options to suppress WebGL and mimic a real browser."""
         try:
             options = Options()
             options.add_argument("--headless")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")  # More aggressive than --disable-webgl
+            options.add_argument("--disable-webgl")  # Still include for good measure
+            options.add_argument("--disable-accelerated-2d-canvas")
+            options.add_argument("--disable-accelerated-video-decode")
+            options.add_argument("window-size=1920,1080")
+            options.add_argument(f"user-agent={self.headers['User-Agent']}")
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
+            options.add_argument("--disable-blink-features=AutomationControlled")
             service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=options)
             driver.set_page_load_timeout(300)  # 5 minutes
@@ -85,25 +89,27 @@ class PopmartMonitor:
             logging.error(f"Failed to save known products: {e}")
 
     def fetch_website(self, url, use_selenium=False, retries=3, delay=5):
-        """Fetch and parse a webpage with retries, enhanced diagnostics."""
+        """Fetch and parse a webpage with retries and enhanced diagnostics."""
         for attempt in range(retries):
             if use_selenium and self.use_selenium and self.driver:
                 try:
                     self.driver.get(url)
                     # Handle terms and conditions popup
                     try:
-                        accept_button = WebDriverWait(self.driver, 10).until(
-                            EC.element_to_be_clickable((By.XPATH, "//div[contains(text(), 'ACCEPT')]"))
+                        logging.info("Waiting for terms and conditions popup...")
+                        accept_button = WebDriverWait(self.driver, 60).until(
+                            EC.element_to_be_clickable((By.XPATH, "//button[contains(text(), 'ACCEPT') or contains(text(), 'Accept')]"))
                         )
-                        logging.info("Found accept button")
                         accept_button.click()
                         logging.info("Clicked accept button")
+                        time.sleep(2)
                     except Exception as e:
                         logging.info(f"No terms popup found or failed to click: {e}")
 
-                    # Wait for product items to load
-                    WebDriverWait(self.driver, 60).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.index_productItem__Z0Lxa"))
+                    # Wait longer for product items to load
+                    logging.info("Waiting for product items to load...")
+                    WebDriverWait(self.driver, 120).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.index_productItem__Z0Lxa, div[class*='productItem']"))
                     )
                     html = self.driver.page_source
                     logging.info(f"Fetched {url} using Selenium")
@@ -112,6 +118,8 @@ class PopmartMonitor:
                     logging.error(f"Selenium failed for {url} (attempt {attempt+1}/{retries}): {e}")
                     if self.driver:
                         self.driver.save_screenshot(f"debug_screenshot_attempt_{attempt+1}.png")
+                        with open(f"debug_page_source_attempt_{attempt+1}.html", "w", encoding="utf-8") as f:
+                            f.write(self.driver.page_source)
                         logs = self.driver.get_log('browser')
                         for log in logs:
                             logging.error(f"Browser log: {log['message']}")
@@ -120,7 +128,7 @@ class PopmartMonitor:
                     time.sleep(delay)
             else:
                 try:
-                    response = requests.get(url, headers=self.headers, timeout=15)
+                    response = requests.get(url, headers=self.headers, timeout=30)
                     response.raise_for_status()
                     logging.info(f"Fetched {url} - Status: {response.status_code}")
                     return BeautifulSoup(response.content, "html.parser")
@@ -134,7 +142,7 @@ class PopmartMonitor:
     def get_product_pages(self):
         """Retrieve product info from the collections page."""
         product_list = []
-        soup = self.fetch_website(self.products_url, use_selenium=self.use_selenium, retries=3, delay=5)
+        soup = self.fetch_website(self.products_url, use_selenium=self.use_selenium)
         if not soup:
             logging.warning("No soup object returned for product pages")
             with open("debug_collection.html", "w", encoding="utf-8") as f:
@@ -179,9 +187,9 @@ class PopmartMonitor:
         return product_list
 
     def check_product_stock(self, product_info):
-        """Check product details and stock status."""
+        """Check product details and stock status on the product page."""
         product_url = product_info["url"]
-        soup = self.fetch_website(product_url, use_selenium=False, retries=3, delay=5)
+        soup = self.fetch_website(product_url, use_selenium=False)
         if not soup:
             logging.warning(f"No soup object for {product_url}")
             return None
@@ -217,7 +225,7 @@ class PopmartMonitor:
             return None
 
     def display_new_product_alert(self, product):
-        """Display an alert for a new product."""
+        """Display an alert for a new product labeled 'NEW'."""
         print("\n" + "=" * 60)
         print(f"{Fore.GREEN}🌟 NEW PRODUCT ALERT! 🌟{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}Product:{Style.RESET_ALL} {product['title']}")
@@ -231,109 +239,4 @@ class PopmartMonitor:
         print("\n" + "=" * 60)
         print(f"{Fore.GREEN}🚨 RESTOCK ALERT! 🚨{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}Product:{Style.RESET_ALL} {product['title']}")
-        print(f"{Fore.YELLOW}Price:{Style.RESET_ALL} {product['price']}")
-        print(f"{Fore.YELLOW}URL:{Style.RESET_ALL} {product['url']}")
-        print(f"{Fore.YELLOW}Time:{Style.RESET_ALL} {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print("=" * 60 + "\n")
-
-    def display_random_pick(self):
-        """Display a random 'NEW' product pick."""
-        new_products = [p for p in self.all_products if p.get("is_new", False)]
-        if not new_products:
-            print(f"{Fore.MAGENTA}No new products available for random pick.{Style.RESET_ALL}")
-            return
-
-        random_product = random.choice(new_products)
-        print("\n" + "-" * 60)
-        print(f"{Fore.MAGENTA}✨ RANDOM NEW PRODUCT PICK ✨{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}Product: {random_product['title']}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}Price:{Style.RESET_ALL} {random_product['price']}")
-        print(f"{Fore.YELLOW}URL:{Style.RESET_ALL} {random_product['url']}")
-        print(f"{Fore.YELLOW}In Stock:{Style.RESET_ALL} {'Yes' if random_product['in_stock'] else 'No'}")
-        print("-" * 60 + "\n")
-
-    def run(self):
-        """Run the main monitoring loop."""
-        print(f"{Fore.CYAN}Checking Popmart for restocks and new products...{Style.RESET_ALL}")
-        logging.info("Starting restock and new product check")
-
-        product_list = self.get_product_pages()
-        restocked_products = []
-        new_products = []
-        self.all_products = []
-
-        for product_info in product_list:
-            updated_product_info = self.check_product_stock(product_info)
-            if not updated_product_info:
-                continue
-
-            self.all_products.append(updated_product_info)
-            product_id = updated_product_info["url"]
-
-            if product_id not in self.known_products:
-                if updated_product_info["is_new"]:
-                    logging.info(f"New 'NEW' product found: {updated_product_info['title']}")
-                    new_products.append(updated_product_info)
-                    self.display_new_product_alert(updated_product_info)
-
-            if product_id in self.known_products:
-                was_out_of_stock = not self.known_products[product_id]["in_stock"]
-                is_now_in_stock = updated_product_info["in_stock"]
-                if was_out_of_stock and is_now_in_stock:
-                    logging.info(f"Product restocked: {updated_product_info['title']}")
-                    restocked_products.append(updated_product_info)
-                    self.display_restock_alert(updated_product_info)
-
-            self.known_products[product_id] = {
-                "title": updated_product_info["title"],
-                "in_stock": updated_product_info["in_stock"],
-                "is_new": updated_product_info["is_new"],
-                "last_checked": datetime.now().isoformat()
-            }
-            time.sleep(1)
-
-        self.save_known_products()
-        print(f"{Fore.CYAN}Check complete. Found {len(new_products)} new 'NEW' products and {len(restocked_products)} restocked products.{Style.RESET_ALL}")
-        logging.info(f"Check complete. Found {len(new_products)} new 'NEW' products and {len(restocked_products)} restocked products.")
-        return restocked_products
-
-    def wait_with_random_picks(self, total_wait_minutes=10, random_pick_minutes=3):
-        """Wait with periodic random product picks."""
-        total_seconds = total_wait_minutes * 60
-        random_pick_seconds = random_pick_minutes * 60
-        elapsed = 0
-
-        while elapsed < total_seconds:
-            remaining = total_seconds - elapsed
-            mins, secs = divmod(remaining, 60)
-            print(f"Next check in: {mins:02d}:{secs:02d}", end="\r")
-            time.sleep(1)
-            elapsed += 1
-
-            if elapsed % random_pick_seconds == 0:
-                self.display_random_pick()
-
-        print("\n")
-
-    def __del__(self):
-        """Clean up Selenium driver."""
-        if hasattr(self, 'driver') and self.driver:
-            self.driver.quit()
-            logging.info("Selenium WebDriver closed")
-
-if __name__ == "__main__":
-    monitor = PopmartMonitor(use_selenium=True)
-    try:
-        print(f"{Fore.CYAN}Popmart Restock and New Product Monitor Started{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}Press Ctrl+C to exit{Style.RESET_ALL}")
-
-        monitor.run()
-        while True:
-            print(f"\n{Fore.CYAN}Waiting 10 minutes before next check...{Style.RESET_ALL}")
-            monitor.wait_with_random_picks(total_wait_minutes=10, random_pick_minutes=3)
-            monitor.run()
-
-    except KeyboardInterrupt:
-        print(f"\n{Fore.YELLOW}Stopping monitor...{Style.RESET_ALL}")
-        monitor.save_known_products()
-        print(f"{Fore.GREEN}Data saved. Exiting.{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}Price:{Style.RESET_ALL} {
