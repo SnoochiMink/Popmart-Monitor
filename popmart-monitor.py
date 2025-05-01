@@ -48,16 +48,16 @@ class PopmartMonitor:
             self.driver = self.setup_selenium()
 
     def setup_selenium(self):
-        """Set up Selenium WebDriver using webdriver-manager."""
+        """Set up Selenium WebDriver with increased timeout."""
         try:
             options = Options()
-            options.add_argument("--headless")  # Run in headless mode (no browser UI)
+            options.add_argument("--headless")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             options.add_experimental_option("excludeSwitches", ["enable-automation"])
-            service = Service(ChromeDriverManager().install())  # Automatically manage ChromeDriver
+            service = Service(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=options)
-            driver.set_page_load_timeout(120)
+            driver.set_page_load_timeout(300)  # 5 minutes
             logging.info("Selenium WebDriver initialized")
             return driver
         except Exception as e:
@@ -85,7 +85,7 @@ class PopmartMonitor:
             logging.error(f"Failed to save known products: {e}")
 
     def fetch_website(self, url, use_selenium=False, retries=3, delay=5):
-        """Fetch and parse a webpage with retries, handling terms popup."""
+        """Fetch and parse a webpage with retries, enhanced diagnostics."""
         for attempt in range(retries):
             if use_selenium and self.use_selenium and self.driver:
                 try:
@@ -93,15 +93,16 @@ class PopmartMonitor:
                     # Handle terms and conditions popup
                     try:
                         accept_button = WebDriverWait(self.driver, 10).until(
-                            EC.element_to_be_clickable((By.CSS_SELECTOR, "div.policy_acceptBtn__ZNUI7"))
+                            EC.element_to_be_clickable((By.XPATH, "//div[contains(text(), 'ACCEPT')]"))
                         )
+                        logging.info("Found accept button")
                         accept_button.click()
-                        logging.info("Accepted terms and conditions popup")
+                        logging.info("Clicked accept button")
                     except Exception as e:
                         logging.info(f"No terms popup found or failed to click: {e}")
 
                     # Wait for product items to load
-                    WebDriverWait(self.driver, 30).until(
+                    WebDriverWait(self.driver, 60).until(
                         EC.presence_of_element_located((By.CSS_SELECTOR, "div.index_productItem__Z0Lxa"))
                     )
                     html = self.driver.page_source
@@ -110,8 +111,10 @@ class PopmartMonitor:
                 except Exception as e:
                     logging.error(f"Selenium failed for {url} (attempt {attempt+1}/{retries}): {e}")
                     if self.driver:
-                        with open("debug_selenium.html", "w", encoding="utf-8") as f:
-                            f.write(self.driver.page_source)
+                        self.driver.save_screenshot(f"debug_screenshot_attempt_{attempt+1}.png")
+                        logs = self.driver.get_log('browser')
+                        for log in logs:
+                            logging.error(f"Browser log: {log['message']}")
                     if attempt == retries - 1:
                         return None
                     time.sleep(delay)
@@ -176,7 +179,7 @@ class PopmartMonitor:
         return product_list
 
     def check_product_stock(self, product_info):
-        """Check product details and stock status on the product page."""
+        """Check product details and stock status."""
         product_url = product_info["url"]
         soup = self.fetch_website(product_url, use_selenium=False, retries=3, delay=5)
         if not soup:
@@ -214,7 +217,7 @@ class PopmartMonitor:
             return None
 
     def display_new_product_alert(self, product):
-        """Display an alert for a new product labeled 'NEW'."""
+        """Display an alert for a new product."""
         print("\n" + "=" * 60)
         print(f"{Fore.GREEN}🌟 NEW PRODUCT ALERT! 🌟{Style.RESET_ALL}")
         print(f"{Fore.YELLOW}Product:{Style.RESET_ALL} {product['title']}")
