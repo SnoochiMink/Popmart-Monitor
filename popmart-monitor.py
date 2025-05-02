@@ -25,14 +25,17 @@ def scrape_products(driver):
         print("Waiting for product elements to load...")
         # Wait up to 180 seconds for product elements to appear
         WebDriverWait(driver, 180).until(
-            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div[class*='product'], div[class*='item']"))
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div[class*='index_imgContainer']"))
         )
         print("Product elements found!")
-        products = driver.find_elements(By.CSS_SELECTOR, "div[class*='product'], div[class*='item']")
+        products = driver.find_elements(By.CSS_SELECTOR, "div[class*='index_imgContainer']")
         for product in products[:5]:  # Limit to 5 for testing
-            title = product.find_element(By.TAG_NAME, "h2").text or "Unknown"
-            price = product.find_element(By.CSS_SELECTOR, "[class*='price']").text or "Unknown"
-            print(f"Found: {title} - {price}")
+            try:
+                title = product.find_element(By.CSS_SELECTOR, "h2[class*='index_itemUsTitle']").text or "Unknown"
+                price = product.find_element(By.CSS_SELECTOR, "div[class*='index_itemPrice_AQoMy']").text or "Unknown"
+                print(f"Found: {title} - {price}")
+            except Exception as e:
+                print(f"Error scraping product: {e}")
     except TimeoutException:
         print("Timeout: Product elements didn’t load within 180 seconds. Check selectors or page behavior.")
     except Exception as e:
